@@ -109,7 +109,7 @@ func (c *Config) String() string {
 		)
 	}
 
-	return fmt.Sprintf("{ChainID: %v, Homestead: %v, DAO: %v, DAO Support: %v, Tangerine Whistle: %v, Spurious Dragon: %v, Byzantium: %v, Constantinople: %v, Petersburg: %v, Istanbul: %v, Muir Glacier: %v, Berlin: %v, London: %v, Arrow Glacier: %v, Gray Glacier: %v, Terminal Total Difficulty: %v, Merge Netsplit: %v, Shanghai: %v, Cancun: %v, Engine: %v}",
+	return fmt.Sprintf("{ChainID: %v, Homestead: %v, DAO: %v, DAO Support: %v, Tangerine Whistle: %v, Spurious Dragon: %v, Byzantium: %v, Constantinople: %v, Petersburg: %v, Istanbul: %v, Muir Glacier: %v, Berlin: %v, London: %v, Arrow Glacier: %v, Gray Glacier: %v, Terminal Total Difficulty: %v, Merge Netsplit: %v, Shanghai: %v, Sharding: %v, Cancun: %v, Engine: %v}",
 		c.ChainID,
 		c.HomesteadBlock,
 		c.DAOForkBlock,
@@ -128,6 +128,7 @@ func (c *Config) String() string {
 		c.TerminalTotalDifficulty,
 		c.MergeNetsplitBlock,
 		c.ShanghaiTime,
+		c.ShardingForkTime,
 		c.CancunTime,
 		engine,
 	)
@@ -353,6 +354,8 @@ func (c *Config) forkPoints() []forkPoint {
 		{name: "arrowGlacierBlock", block: c.ArrowGlacierBlock, canSkip: true},
 		{name: "grayGlacierBlock", block: c.GrayGlacierBlock, canSkip: true},
 		{name: "mergeNetsplitBlock", block: c.MergeNetsplitBlock, canSkip: true},
+		// {name: "shanghaiTime", timestamp: c.ShanghaiTime},
+		// {name: "shardingForkTime", timestamp: c.ShardingForkTime},
 	}
 }
 
@@ -386,6 +389,7 @@ func (c *Config) CheckConfigForkOrder() error {
 	return nil
 }
 
+// TODO: add ShardingForkTime and ShanghaiTime
 func (c *Config) checkCompatible(newcfg *Config, head uint64) *ConfigCompatError {
 	// returns true if a fork scheduled at s1 cannot be rescheduled to block s2 because head is already past the fork.
 	incompatible := func(s1, s2 *big.Int, head uint64) bool {

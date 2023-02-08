@@ -80,6 +80,28 @@ func NewTxParseContext(chainID uint256.Int) *TxParseContext {
 	return ctx
 }
 
+// recover sender address after appropriately populating ctx.Sighash, ctx.R & ctx.S
+func (ctx *TxParseContext) RecoverSender(vByte byte, sender []byte) error {
+	binary.BigEndian.PutUint64(ctx.Sig[0:8], ctx.R[3])
+	binary.BigEndian.PutUint64(ctx.Sig[8:16], ctx.R[2])
+	binary.BigEndian.PutUint64(ctx.Sig[16:24], ctx.R[1])
+	binary.BigEndian.PutUint64(ctx.Sig[24:32], ctx.R[0])
+	binary.BigEndian.PutUint64(ctx.Sig[32:40], ctx.S[3])
+	binary.BigEndian.PutUint64(ctx.Sig[40:48], ctx.S[2])
+	binary.BigEndian.PutUint64(ctx.Sig[48:56], ctx.S[1])
+	binary.BigEndian.PutUint64(ctx.Sig[56:64], ctx.S[0])
+	ctx.Sig[64] = vByte
+	if _, err := secp256k1.RecoverPubkeyWithContext(secp256k1.DefaultContext, ctx.Sighash[:], ctx.Sig[:], ctx.buf[:0]); err != nil {
+		return err
+	}
+	ctx.Keccak2.Reset()
+	ctx.Keccak2.Write(ctx.buf[1:65])
+	ctx.Keccak2.(io.Reader).Read(ctx.buf[:32])
+	//take last 20 bytes as address
+	copy(sender, ctx.buf[12:32])
+	return nil
+}
+
 // TxSlot contains information extracted from an Ethereum transaction, which is enough to manage it inside the transaction.
 // Also, it contains some auxillary information, like ephemeral fields, and indices within priority queues
 type TxSlot struct {
@@ -97,12 +119,17 @@ type TxSlot struct {
 	IDHash         [32]byte // Transaction hash for the purposes of using it as a transaction Id
 	Traced         bool     // Whether transaction needs to be traced throughout transaction pool code and generate debug printing
 	Creation       bool     // Set to true if "To" field of the transaction is not set
+	Type           byte     // Transaction type
+	Size           uint32   // Size of the payload
+	Blobs          int      // Set to the # of blobs contained by the transaction
 }
 
 const (
-	LegacyTxType     int = 0
-	AccessListTxType int = 1
-	DynamicFeeTxType int = 2
+	LegacyTxType     byte = 0
+	AccessListTxType byte = 1
+	DynamicFeeTxType byte = 2
+
+	BlobTxType byte = 5
 )
 
 var ErrParseTxn = fmt.Errorf("%w transaction", rlp.ErrParse)
@@ -121,7 +148,7 @@ func (ctx *TxParseContext) ChainIDRequired() *TxParseContext {
 
 // ParseTransaction extracts all the information from the transactions's payload (RLP) necessary to build TxSlot
 // it also performs syntactic validation of the transactions
-func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlot, sender []byte, hasEnvelope bool, validateHash func([]byte) error) (p int, err error) {
+func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlot, sender []byte, hasEnvelope bool, networkVersion bool, validateHash func([]byte) error) (p int, err error) {
 	if len(payload) == 0 {
 		return 0, fmt.Errorf("%w: empty rlp", ErrParseTxn)
 	}
@@ -148,11 +175,16 @@ func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlo
 	}
 
 	p = dataPos
-
-	var txType int
 	// If it is non-legacy transaction, the transaction type follows, and then the the list
 	if !legacy {
-		txType = int(payload[p])
+		txType := payload[p]
+		if txType == BlobTxType {
+			// TODO: Parsing the blob transaction requires we know the "scope" of the encoding
+			// since it is SSZ format. We assume the scope ends at the last byte of the payload
+			// argument; this currently seems to always be the case, but does not seem to be
+			// mandated by this function's contract.
+			return len(payload), ctx.ParseBlobTransaction(payload[p:], slot, sender, networkVersion, validateHash)
+		}
 		if _, err = ctx.Keccak1.Write(payload[p : p+1]); err != nil {
 			return 0, fmt.Errorf("%w: computing IdHash (hashing type Prefix): %s", ErrParseTxn, err)
 		}
@@ -176,6 +208,7 @@ func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlo
 		slot.Rlp = payload[p-1 : dataPos+dataLen]
 		p = dataPos
 	} else {
+		slot.Type = LegacyTxType
 		slot.Rlp = payload[pos : dataPos+dataLen]
 	}
 
@@ -215,7 +248,7 @@ func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlo
 	}
 	// Next follows feeCap, but only for dynamic fee transactions, for legacy transaction, it is
 	// equal to tip
-	if txType < DynamicFeeTxType {
+	if slot.Type < DynamicFeeTxType {
 		slot.FeeCap = slot.Tip
 	} else {
 		// Although consensus rules specify that feeCap can be up to 256 bit long, we narrow it to 64 bit
@@ -432,20 +465,9 @@ func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlo
 			}
 		}
 	}
-	// Squeeze Sighash
-	_, _ = ctx.Keccak2.(io.Reader).Read(ctx.Sighash[:32])
-	//ctx.keccak2.Sum(ctx.Sighash[:0])
-	binary.BigEndian.PutUint64(ctx.Sig[0:8], ctx.R[3])
-	binary.BigEndian.PutUint64(ctx.Sig[8:16], ctx.R[2])
-	binary.BigEndian.PutUint64(ctx.Sig[16:24], ctx.R[1])
-	binary.BigEndian.PutUint64(ctx.Sig[24:32], ctx.R[0])
-	binary.BigEndian.PutUint64(ctx.Sig[32:40], ctx.S[3])
-	binary.BigEndian.PutUint64(ctx.Sig[40:48], ctx.S[2])
-	binary.BigEndian.PutUint64(ctx.Sig[48:56], ctx.S[1])
-	binary.BigEndian.PutUint64(ctx.Sig[56:64], ctx.S[0])
-	ctx.Sig[64] = vByte
-	// recover sender
-	if _, err = secp256k1.RecoverPubkeyWithContext(secp256k1.DefaultContext, ctx.Sighash[:], ctx.Sig[:], ctx.buf[:0]); err != nil {
+
+	ctx.Keccak2.(io.Reader).Read(ctx.Sighash[:32])
+	if err := ctx.RecoverSender(vByte, sender); err != nil {
 		return 0, fmt.Errorf("%w: recovering sender from signature: %s", ErrParseTxn, err)
 	}
 	//apply keccak to the public key
@@ -459,7 +481,71 @@ func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlo
 	//take last 20 bytes as address
 	copy(sender, ctx.buf[12:32])
 
+	slot.Size = uint32(p - pos)
 	return p, nil
+}
+
+func (ctx *TxParseContext) ParseBlobTransaction(payload []byte, slot *TxSlot, sender []byte, networkVersion bool, validateHash func([]byte) error) error {
+	slot.Rlp = payload // includes type byte
+	ctx.Keccak1.Write(payload)
+	ctx.Keccak1.(io.Reader).Read(slot.IDHash[:32])
+	if validateHash != nil {
+		if err := validateHash(slot.IDHash[:32]); err != nil {
+			return err
+		}
+	}
+	payload = payload[1:]
+	// payload should now include the SSZ encoded tx and nothing more
+	tx := wrapper{}
+	if networkVersion {
+		if err := tx.Deserialize(payload); err != nil {
+			return fmt.Errorf("%w: deserializing blob tx wrapper ssz: %s", ErrParseTxn, err)
+		}
+		slot.Blobs = tx.numBlobHashes
+		if err := tx.VerifyBlobs(payload); err != nil {
+			return fmt.Errorf("%w: blob verification failed: %s", ErrParseTxn, err)
+		}
+	} else if err := tx.DeserializeTx(payload, 0, len(payload)); err != nil {
+		return fmt.Errorf("%w: deserializing signed blob tx ssz: %s", ErrParseTxn, err)
+	}
+	slot.Nonce = tx.nonce
+	slot.Tip = tx.maxPriorityFeePerGas
+	slot.FeeCap = tx.maxFeePerGas
+	slot.Gas = tx.gas
+	slot.Creation = tx.creation
+	slot.Value = tx.value
+	slot.DataLen = tx.dataLen
+	slot.DataNonZeroLen = tx.dataNonZeroLen
+	slot.AlAddrCount = tx.accessListAddressCount
+	slot.AlStorCount = tx.accessListKeyCount
+
+	if !ctx.withSender {
+		return nil
+	}
+
+	// Verify the tx signature
+	vByte := payload[tx.sigOffset]
+	var err error
+	ctx.R, err = readUint256(payload, tx.sigOffset+1)
+	if err != nil {
+		return fmt.Errorf("%w: failed to extract sig.R: %s", ErrParseTxn, err)
+	}
+	ctx.S, err = readUint256(payload, tx.sigOffset+33)
+	if err != nil {
+		return fmt.Errorf("%w: failed to extract sig.V: %s", ErrParseTxn, err)
+	}
+	if !crypto.TransactionSignatureIsValid(vByte, &ctx.R, &ctx.S, false) {
+		return fmt.Errorf("%w: invalid v, r, s: %d, %s, %s", ErrParseTxn, vByte, &ctx.R, &ctx.S)
+	}
+
+	// Recover sender address
+	ctx.Keccak2.Write([]byte{byte(BlobTxType)})
+	ctx.Keccak2.Write(payload[tx.sigHashStart:tx.sigHashEnd])
+	ctx.Keccak2.(io.Reader).Read(ctx.Sighash[:32])
+	if err := ctx.RecoverSender(vByte, sender); err != nil {
+		return fmt.Errorf("%w: recovering sender from signature: %s", ErrParseTxn, err)
+	}
+	return nil
 }
 
 type PeerID *types.H512
@@ -502,6 +588,129 @@ func (h Hashes) DedupCopy() Hashes {
 			dest += length.Hash
 		}
 	}
+	return c
+}
+
+type Announcements struct {
+	ts     []byte
+	sizes  []uint32
+	hashes []byte
+}
+
+func (a *Announcements) Append(t byte, size uint32, hash []byte) {
+	a.ts = append(a.ts, t)
+	a.sizes = append(a.sizes, size)
+	a.hashes = append(a.hashes, hash...)
+}
+
+func (a *Announcements) AppendOther(other Announcements) {
+	a.ts = append(a.ts, other.ts...)
+	a.sizes = append(a.sizes, other.sizes...)
+	a.hashes = append(a.hashes, other.hashes...)
+}
+
+func (a *Announcements) Reset() {
+	a.ts = a.ts[:0]
+	a.sizes = a.sizes[:0]
+	a.hashes = a.hashes[:0]
+}
+
+func (a Announcements) At(i int) (byte, uint32, []byte) {
+	return a.ts[i], a.sizes[i], a.hashes[i*length.Hash : (i+1)*length.Hash]
+}
+func (a Announcements) Len() int { return len(a.ts) }
+func (a Announcements) Less(i, j int) bool {
+	return bytes.Compare(a.hashes[i*length.Hash:(i+1)*length.Hash], a.hashes[j*length.Hash:(j+1)*length.Hash]) < 0
+}
+func (a Announcements) Swap(i, j int) {
+	a.ts[i], a.ts[j] = a.ts[j], a.ts[i]
+	a.sizes[i], a.sizes[j] = a.sizes[j], a.sizes[i]
+	ii := i * length.Hash
+	jj := j * length.Hash
+	for k := 0; k < length.Hash; k++ {
+		a.hashes[ii], a.hashes[jj] = a.hashes[jj], a.hashes[ii]
+		ii++
+		jj++
+	}
+}
+
+// DedupCopy sorts hashes, and creates deduplicated copy
+func (a Announcements) DedupCopy() Announcements {
+	if len(a.ts) == 0 {
+		return a
+	}
+	sort.Sort(a)
+	unique := 1
+	for i := length.Hash; i < len(a.hashes); i += length.Hash {
+		if !bytes.Equal(a.hashes[i:i+length.Hash], a.hashes[i-length.Hash:i]) {
+			unique++
+		}
+	}
+	c := Announcements{
+		ts:     make([]byte, unique),
+		sizes:  make([]uint32, unique),
+		hashes: make([]byte, unique*length.Hash),
+	}
+	copy(c.hashes[:], a.hashes[0:length.Hash])
+	c.ts[0] = a.ts[0]
+	c.sizes[0] = a.sizes[0]
+	dest := length.Hash
+	j := 1
+	origin := length.Hash
+	for i := 1; i < len(a.ts); i++ {
+		if !bytes.Equal(a.hashes[origin:origin+length.Hash], a.hashes[origin-length.Hash:origin]) {
+			copy(c.hashes[dest:dest+length.Hash], a.hashes[origin:origin+length.Hash])
+			c.ts[j] = a.ts[i]
+			c.sizes[j] = a.sizes[i]
+			dest += length.Hash
+			j++
+		}
+		origin += length.Hash
+	}
+	return c
+}
+
+func (a Announcements) DedupHashes() Hashes {
+	if len(a.ts) == 0 {
+		return Hashes{}
+	}
+	sort.Sort(a)
+	unique := 1
+	for i := length.Hash; i < len(a.hashes); i += length.Hash {
+		if !bytes.Equal(a.hashes[i:i+length.Hash], a.hashes[i-length.Hash:i]) {
+			unique++
+		}
+	}
+	c := make(Hashes, unique*length.Hash)
+	copy(c[:], a.hashes[0:length.Hash])
+	dest := length.Hash
+	j := 1
+	origin := length.Hash
+	for i := 1; i < len(a.ts); i++ {
+		if !bytes.Equal(a.hashes[origin:origin+length.Hash], a.hashes[origin-length.Hash:origin]) {
+			copy(c[dest:dest+length.Hash], a.hashes[origin:origin+length.Hash])
+			dest += length.Hash
+			j++
+		}
+		origin += length.Hash
+	}
+	return c
+}
+
+func (a Announcements) Hashes() Hashes {
+	return Hashes(a.hashes)
+}
+
+func (a Announcements) Copy() Announcements {
+	if len(a.ts) == 0 {
+		return a
+	}
+	c := Announcements{
+		ts:     common.Copy(a.ts),
+		sizes:  make([]uint32, len(a.sizes)),
+		hashes: common.Copy(a.hashes),
+	}
+	copy(c.sizes, a.sizes)
 	return c
 }
 

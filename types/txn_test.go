@@ -18,7 +18,9 @@ package types
 
 import (
 	"bytes"
+	"fmt"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/holiman/uint256"
@@ -26,7 +28,69 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/ledgerwatch/erigon-lib/common/hexutility"
+	"github.com/ledgerwatch/erigon-lib/rlp"
 )
+
+func TestParseBlobTransaction(t *testing.T) {
+	require := require.New(t)
+	ctx := NewTxParseContext(*new(uint256.Int).SetUint64(1))
+	tx, txSender := &TxSlot{}, [20]byte{}
+
+	ssz := hexutility.MustDecodeHex(strings.TrimSpace(blobTxHex))
+	payload := append([]byte{byte(BlobTxType)}, ssz...)
+	parseEnd, err := ctx.ParseTransaction(payload, 0, tx, txSender[:], false /* hasEnvelope */, true /* networkVersion */, nil)
+	require.NoError(err)
+	require.Equal(len(payload), parseEnd)
+
+	// Same test only with an rlp tx envelope.
+	ssz_copy := make([]byte, len(ssz)+1)
+	copy(ssz_copy, ssz)
+	ssz_copy[len(ssz)] = 0
+
+	stringLen := rlp.StringLen(ssz_copy)
+	payload = make([]byte, stringLen)
+	rlp.EncodeString(append([]byte{byte(BlobTxType)}, ssz...), payload)
+	parseEnd, err = ctx.ParseTransaction(payload, 0, tx, txSender[:], true /* hasEnvelope */, true /* networkVersion */, nil)
+
+	if tx.Nonce != 10 {
+		t.Errorf("Expected nonce == 10, got: %v", tx.Nonce)
+	}
+	if tx.Tip.Uint64() != 42 {
+		t.Errorf("Expected Tip == 42, got %v", tx.Tip)
+	}
+	if tx.FeeCap.Uint64() != 10 {
+		t.Errorf("Expected FeeCap == 10, got %v", tx.FeeCap.Uint64())
+	}
+	if tx.Gas != 123457 {
+		t.Errorf("Expected gas == 123457, got %v", tx.Gas)
+	}
+	if tx.Creation == true {
+		t.Errorf("Expected !tx.Creation")
+	}
+	if tx.Value.Uint64() != 100 {
+		t.Errorf("Expected Value == 100, got %v", tx.Value.Uint64())
+	}
+	if tx.DataLen != 6 {
+		t.Errorf("Expected DataLen == 6, got %v", tx.DataLen)
+	}
+	if tx.AlAddrCount != 2 {
+		t.Errorf("Expected 2 addresses in access list, got %v", tx.AlAddrCount)
+	}
+	if tx.AlStorCount != 3 {
+		t.Errorf("Expected 3 keys in access list, got %v", tx.AlStorCount)
+	}
+
+	// One more test with the no-blob tx & known sender
+	ssz = hexutility.MustDecodeHex(blobTxCreateHex)
+	payload = append([]byte{byte(BlobTxType)}, ssz...)
+	parseEnd, err = ctx.ParseTransaction(payload, 0, tx, txSender[:], false /* hasEnvelope */, true /* networkVersion */, nil)
+	require.NoError(err)
+	require.Equal(len(payload), parseEnd)
+	sender := fmt.Sprintf("%x", txSender)
+	if sender != blobTxCreateSender {
+		t.Errorf("Wrong sender. Expected %v, got: %v", blobTxCreateSender, sender)
+	}
+}
 
 func TestParseTransactionRLP(t *testing.T) {
 	for _, testSet := range allNetsTestCases {
@@ -39,7 +103,7 @@ func TestParseTransactionRLP(t *testing.T) {
 				tt := tt
 				t.Run(strconv.Itoa(i), func(t *testing.T) {
 					payload := hexutility.MustDecodeHex(tt.PayloadStr)
-					parseEnd, err := ctx.ParseTransaction(payload, 0, tx, txSender[:], false /* hasEnvelope */, nil)
+					parseEnd, err := ctx.ParseTransaction(payload, 0, tx, txSender[:], false /* hasEnvelope */, true /* networkVersion */, nil)
 					require.NoError(err)
 					require.Equal(len(payload), parseEnd)
 					if tt.SignHashStr != "" {
@@ -74,19 +138,19 @@ func TestTransactionSignatureValidity1(t *testing.T) {
 
 	tx, txSender := &TxSlot{}, [20]byte{}
 	validTxn := hexutility.MustDecodeHex("f83f800182520894095e7baea6a6c7c4c2dfeb977efac326af552d870b801ba048b55bfa915ac795c431978d8a6a992b628d557da5ff759b307d495a3664935301")
-	_, err := ctx.ParseTransaction(validTxn, 0, tx, txSender[:], false /* hasEnvelope */, nil)
+	_, err := ctx.ParseTransaction(validTxn, 0, tx, txSender[:], false /* hasEnvelope */, true /* networkVersion */, nil)
 	assert.NoError(t, err)
 
 	preEip2Txn := hexutility.MustDecodeHex("f85f800182520894095e7baea6a6c7c4c2dfeb977efac326af552d870b801ba048b55bfa915ac795c431978d8a6a992b628d557da5ff759b307d495a36649353a07fffffffffffffffffffffffffffffff5d576e7357a4501ddfe92f46681b20a1")
-	_, err = ctx.ParseTransaction(preEip2Txn, 0, tx, txSender[:], false /* hasEnvelope */, nil)
+	_, err = ctx.ParseTransaction(preEip2Txn, 0, tx, txSender[:], false /* hasEnvelope */, true /* networkVersion */, nil)
 	assert.NoError(t, err)
 
 	// Now enforce EIP-2
 	ctx.WithAllowPreEip2s(false)
-	_, err = ctx.ParseTransaction(validTxn, 0, tx, txSender[:], false /* hasEnvelope */, nil)
+	_, err = ctx.ParseTransaction(validTxn, 0, tx, txSender[:], false /* hasEnvelope */, true /*networkVersion */, nil)
 	assert.NoError(t, err)
 
-	_, err = ctx.ParseTransaction(preEip2Txn, 0, tx, txSender[:], false /* hasEnvelope */, nil)
+	_, err = ctx.ParseTransaction(preEip2Txn, 0, tx, txSender[:], false /* hasEnvelope */, true /*networkVersion */, nil)
 	assert.Error(t, err)
 }
 
@@ -96,12 +160,12 @@ func TestTransactionSignatureValidity2(t *testing.T) {
 	ctx := NewTxParseContext(*chainId)
 	slot, sender := &TxSlot{}, [20]byte{}
 	rlp := hexutility.MustDecodeHex("02f8720513844190ab00848321560082520894cab441d2f45a3fee83d15c6b6b6c36a139f55b6288054607fc96a6000080c001a0dffe4cb5651e663d0eac8c4d002de734dd24db0f1109b062d17da290a133cc02a0913fb9f53f7a792bcd9e4d7cced1b8545d1ab82c77432b0bc2e9384ba6c250c5")
-	_, err := ctx.ParseTransaction(rlp, 0, slot, sender[:], false /* hasEnvelope */, nil)
+	_, err := ctx.ParseTransaction(rlp, 0, slot, sender[:], false /* hasEnvelope */, true /* networkVersion */, nil)
 	assert.Error(t, err)
 
 	// Only legacy transactions can happen before EIP-2
 	ctx.WithAllowPreEip2s(true)
-	_, err = ctx.ParseTransaction(rlp, 0, slot, sender[:], false /* hasEnvelope */, nil)
+	_, err = ctx.ParseTransaction(rlp, 0, slot, sender[:], false /* hasEnvelope */, true /* networkVersion */, nil)
 	assert.Error(t, err)
 }
 
