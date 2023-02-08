@@ -142,6 +142,8 @@ const (
 
 	BaseFeePoolBits = EnoughFeeCapProtocol + NoNonceGaps + EnoughBalance + NotTooMuchGas
 	QueuedPoolBits  = EnoughFeeCapProtocol
+
+	DataGasPerBlob = 1 << 17
 )
 
 type DiscardReason uint8
@@ -619,10 +621,9 @@ func (p *TxPool) IsLocal(idHash []byte) bool {
 func (p *TxPool) AddNewGoodPeer(peerID types.PeerID) { p.recentlyConnectedPeers.AddPeer(peerID) }
 func (p *TxPool) Started() bool                      { return p.started.Load() }
 
-func (p *TxPool) best(n uint16, txs *types.TxsRlp, tx kv.Tx, onTopOf, availableGas uint64, toSkip mapset.Set[[32]byte]) (bool, int, error) {
+func (p *TxPool) best(n uint16, txs *types.TxsRlp, tx kv.Tx, onTopOf, availableGas uint64, availableDataGas uint64, toSkip mapset.Set[[32]byte]) (bool, int, error) {
 	p.lock.Lock()
 	defer p.lock.Unlock()
-
 	// First wait for the corresponding block to arrive
 	if p.lastSeenBlock.Load() < onTopOf {
 		return false, 0, nil // Too early
@@ -698,13 +699,13 @@ func (p *TxPool) ResetYieldedStatus() {
 	}
 }
 
-func (p *TxPool) YieldBest(n uint16, txs *types.TxsRlp, tx kv.Tx, onTopOf, availableGas uint64, toSkip mapset.Set[[32]byte]) (bool, int, error) {
-	return p.best(n, txs, tx, onTopOf, availableGas, toSkip)
+func (p *TxPool) YieldBest(n uint16, txs *types.TxsRlp, tx kv.Tx, onTopOf, availableGas, availableDataGas uint64, toSkip mapset.Set[[32]byte]) (bool, int, error) {
+	return p.best(n, txs, tx, onTopOf, availableGas, availableDataGas, toSkip)
 }
 
-func (p *TxPool) PeekBest(n uint16, txs *types.TxsRlp, tx kv.Tx, onTopOf, availableGas uint64) (bool, error) {
+func (p *TxPool) PeekBest(n uint16, txs *types.TxsRlp, tx kv.Tx, onTopOf, availableGas, availableDataGas uint64) (bool, error) {
 	set := mapset.NewSet[[32]byte]()
-	onTime, _, err := p.best(n, txs, tx, onTopOf, availableGas, set)
+	onTime, _, err := p.best(n, txs, tx, onTopOf, availableGas, availableDataGas, set)
 	return onTime, err
 }
 
@@ -1425,6 +1426,11 @@ func promote(pending *PendingPool, baseFee, queued *SubPool, pendingBaseFee uint
 	}
 }
 
+// Returns whether the given binary encoded transaction is a blob tx
+func isBlobTx(tx []byte) bool {
+	return len(tx) > 0 && tx[0] == byte(types.BlobTxType)
+}
+
 // MainLoop - does:
 // send pending byHash to p2p:
 //   - new byHash
@@ -1521,12 +1527,16 @@ func MainLoop(ctx context.Context, db kv.RwDB, coreDB kv.RoDB, p *TxPool, newTxs
 							localTxTypes = append(localTxTypes, t)
 							localTxSizes = append(localTxSizes, size)
 							localTxHashes = append(localTxHashes, hash...)
-							localTxRlps = append(localTxRlps, slotRlp)
+							if !isBlobTx(slotRlp) { // don't broadcast blob txs
+								localTxRlps = append(localTxRlps, slotRlp)
+							}
 						} else {
 							remoteTxTypes = append(remoteTxTypes, t)
 							remoteTxSizes = append(remoteTxSizes, size)
 							remoteTxHashes = append(remoteTxHashes, hash...)
-							remoteTxRlps = append(remoteTxRlps, slotRlp)
+							if !isBlobTx(slotRlp) {
+								remoteTxRlps = append(remoteTxRlps, slotRlp)
+							}
 						}
 					}
 					return nil
@@ -1540,10 +1550,11 @@ func MainLoop(ctx context.Context, db kv.RwDB, coreDB kv.RoDB, p *TxPool, newTxs
 
 				// first broadcast all local txs to all peers, then non-local to random sqrt(peersAmount) peers
 				txSentTo := send.BroadcastPooledTxs(localTxRlps)
+				log.Info("local txs sent to peers", "peers", txSentTo)
 				hashSentTo := send.AnnouncePooledTxs(localTxTypes, localTxSizes, localTxHashes)
 				for i := 0; i < localTxHashes.Len(); i++ {
 					hash := localTxHashes.At(i)
-					log.Info("local tx propagated", "tx_hash", hex.EncodeToString(hash), "announced to peers", hashSentTo[i], "broadcast to peers", txSentTo[i], "baseFee", p.pendingBaseFee.Load())
+					log.Info("local tx propagated", "tx_hash", hex.EncodeToString(hash), "announced to peers", hashSentTo[i], "baseFee", p.pendingBaseFee.Load())
 				}
 				send.BroadcastPooledTxs(remoteTxRlps)
 				send.AnnouncePooledTxs(remoteTxTypes, remoteTxSizes, remoteTxHashes)
@@ -1703,7 +1714,7 @@ func (p *TxPool) fromDB(ctx context.Context, tx kv.Tx, coreTx kv.Tx) error {
 		addr, txRlp := v[:20], v[20:]
 		txn := &types.TxSlot{}
 
-		_, err = parseCtx.ParseTransaction(txRlp, 0, txn, nil, false /* hasEnvelope */, nil)
+		_, err = parseCtx.ParseTransaction(txRlp, 0, txn, nil, false /* hasEnvelope */, true /* networkVersion */, nil)
 		if err != nil {
 			err = fmt.Errorf("err: %w, rlp: %x", err, txRlp)
 			log.Warn("[txpool] fromDB: parseTransaction", "err", err)

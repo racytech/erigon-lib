@@ -80,6 +80,28 @@ func NewTxParseContext(chainID uint256.Int) *TxParseContext {
 	return ctx
 }
 
+// recover sender address after appropriately populating ctx.Sighash, ctx.R & ctx.S
+func (ctx *TxParseContext) RecoverSender(vByte byte, sender []byte) error {
+	binary.BigEndian.PutUint64(ctx.Sig[0:8], ctx.R[3])
+	binary.BigEndian.PutUint64(ctx.Sig[8:16], ctx.R[2])
+	binary.BigEndian.PutUint64(ctx.Sig[16:24], ctx.R[1])
+	binary.BigEndian.PutUint64(ctx.Sig[24:32], ctx.R[0])
+	binary.BigEndian.PutUint64(ctx.Sig[32:40], ctx.S[3])
+	binary.BigEndian.PutUint64(ctx.Sig[40:48], ctx.S[2])
+	binary.BigEndian.PutUint64(ctx.Sig[48:56], ctx.S[1])
+	binary.BigEndian.PutUint64(ctx.Sig[56:64], ctx.S[0])
+	ctx.Sig[64] = vByte
+	if _, err := secp256k1.RecoverPubkeyWithContext(secp256k1.DefaultContext, ctx.Sighash[:], ctx.Sig[:], ctx.buf[:0]); err != nil {
+		return err
+	}
+	ctx.Keccak2.Reset()
+	ctx.Keccak2.Write(ctx.buf[1:65])
+	ctx.Keccak2.(io.Reader).Read(ctx.buf[:32])
+	//take last 20 bytes as address
+	copy(sender, ctx.buf[12:32])
+	return nil
+}
+
 // TxSlot contains information extracted from an Ethereum transaction, which is enough to manage it inside the transaction.
 // Also, it contains some auxillary information, like ephemeral fields, and indices within priority queues
 type TxSlot struct {
@@ -99,12 +121,15 @@ type TxSlot struct {
 	Creation       bool     // Set to true if "To" field of the transaction is not set
 	Type           byte     // Transaction type
 	Size           uint32   // Size of the payload
+	Blobs          int      // Set to the # of blobs contained by the transaction
 }
 
 const (
 	LegacyTxType     byte = 0
 	AccessListTxType byte = 1
 	DynamicFeeTxType byte = 2
+
+	BlobTxType byte = 5
 )
 
 var ErrParseTxn = fmt.Errorf("%w transaction", rlp.ErrParse)
@@ -123,7 +148,7 @@ func (ctx *TxParseContext) ChainIDRequired() *TxParseContext {
 
 // ParseTransaction extracts all the information from the transactions's payload (RLP) necessary to build TxSlot
 // it also performs syntactic validation of the transactions
-func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlot, sender []byte, hasEnvelope bool, validateHash func([]byte) error) (p int, err error) {
+func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlot, sender []byte, hasEnvelope bool, networkVersion bool, validateHash func([]byte) error) (p int, err error) {
 	if len(payload) == 0 {
 		return 0, fmt.Errorf("%w: empty rlp", ErrParseTxn)
 	}
@@ -150,10 +175,16 @@ func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlo
 	}
 
 	p = dataPos
-
 	// If it is non-legacy transaction, the transaction type follows, and then the the list
 	if !legacy {
-		slot.Type = payload[p]
+		txType := payload[p]
+		if txType == BlobTxType {
+			// TODO: Parsing the blob transaction requires we know the "scope" of the encoding
+			// since it is SSZ format. We assume the scope ends at the last byte of the payload
+			// argument; this currently seems to always be the case, but does not seem to be
+			// mandated by this function's contract.
+			return len(payload), ctx.ParseBlobTransaction(payload[p:], slot, sender, networkVersion, validateHash)
+		}
 		if _, err = ctx.Keccak1.Write(payload[p : p+1]); err != nil {
 			return 0, fmt.Errorf("%w: computing IdHash (hashing type Prefix): %s", ErrParseTxn, err)
 		}
@@ -434,20 +465,9 @@ func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlo
 			}
 		}
 	}
-	// Squeeze Sighash
-	_, _ = ctx.Keccak2.(io.Reader).Read(ctx.Sighash[:32])
-	//ctx.keccak2.Sum(ctx.Sighash[:0])
-	binary.BigEndian.PutUint64(ctx.Sig[0:8], ctx.R[3])
-	binary.BigEndian.PutUint64(ctx.Sig[8:16], ctx.R[2])
-	binary.BigEndian.PutUint64(ctx.Sig[16:24], ctx.R[1])
-	binary.BigEndian.PutUint64(ctx.Sig[24:32], ctx.R[0])
-	binary.BigEndian.PutUint64(ctx.Sig[32:40], ctx.S[3])
-	binary.BigEndian.PutUint64(ctx.Sig[40:48], ctx.S[2])
-	binary.BigEndian.PutUint64(ctx.Sig[48:56], ctx.S[1])
-	binary.BigEndian.PutUint64(ctx.Sig[56:64], ctx.S[0])
-	ctx.Sig[64] = vByte
-	// recover sender
-	if _, err = secp256k1.RecoverPubkeyWithContext(secp256k1.DefaultContext, ctx.Sighash[:], ctx.Sig[:], ctx.buf[:0]); err != nil {
+
+	ctx.Keccak2.(io.Reader).Read(ctx.Sighash[:32])
+	if err := ctx.RecoverSender(vByte, sender); err != nil {
 		return 0, fmt.Errorf("%w: recovering sender from signature: %s", ErrParseTxn, err)
 	}
 	//apply keccak to the public key
@@ -463,6 +483,69 @@ func (ctx *TxParseContext) ParseTransaction(payload []byte, pos int, slot *TxSlo
 
 	slot.Size = uint32(p - pos)
 	return p, nil
+}
+
+func (ctx *TxParseContext) ParseBlobTransaction(payload []byte, slot *TxSlot, sender []byte, networkVersion bool, validateHash func([]byte) error) error {
+	slot.Rlp = payload // includes type byte
+	ctx.Keccak1.Write(payload)
+	ctx.Keccak1.(io.Reader).Read(slot.IDHash[:32])
+	if validateHash != nil {
+		if err := validateHash(slot.IDHash[:32]); err != nil {
+			return err
+		}
+	}
+	payload = payload[1:]
+	// payload should now include the SSZ encoded tx and nothing more
+	tx := wrapper{}
+	if networkVersion {
+		if err := tx.Deserialize(payload); err != nil {
+			return fmt.Errorf("%w: deserializing blob tx wrapper ssz: %s", ErrParseTxn, err)
+		}
+		slot.Blobs = tx.numBlobHashes
+		if err := tx.VerifyBlobs(payload); err != nil {
+			return fmt.Errorf("%w: blob verification failed: %s", ErrParseTxn, err)
+		}
+	} else if err := tx.DeserializeTx(payload, 0, len(payload)); err != nil {
+		return fmt.Errorf("%w: deserializing signed blob tx ssz: %s", ErrParseTxn, err)
+	}
+	slot.Nonce = tx.nonce
+	slot.Tip = tx.maxPriorityFeePerGas
+	slot.FeeCap = tx.maxFeePerGas
+	slot.Gas = tx.gas
+	slot.Creation = tx.creation
+	slot.Value = tx.value
+	slot.DataLen = tx.dataLen
+	slot.DataNonZeroLen = tx.dataNonZeroLen
+	slot.AlAddrCount = tx.accessListAddressCount
+	slot.AlStorCount = tx.accessListKeyCount
+
+	if !ctx.withSender {
+		return nil
+	}
+
+	// Verify the tx signature
+	vByte := payload[tx.sigOffset]
+	var err error
+	ctx.R, err = readUint256(payload, tx.sigOffset+1)
+	if err != nil {
+		return fmt.Errorf("%w: failed to extract sig.R: %s", ErrParseTxn, err)
+	}
+	ctx.S, err = readUint256(payload, tx.sigOffset+33)
+	if err != nil {
+		return fmt.Errorf("%w: failed to extract sig.V: %s", ErrParseTxn, err)
+	}
+	if !crypto.TransactionSignatureIsValid(vByte, &ctx.R, &ctx.S, false) {
+		return fmt.Errorf("%w: invalid v, r, s: %d, %s, %s", ErrParseTxn, vByte, &ctx.R, &ctx.S)
+	}
+
+	// Recover sender address
+	ctx.Keccak2.Write([]byte{byte(BlobTxType)})
+	ctx.Keccak2.Write(payload[tx.sigHashStart:tx.sigHashEnd])
+	ctx.Keccak2.(io.Reader).Read(ctx.Sighash[:32])
+	if err := ctx.RecoverSender(vByte, sender); err != nil {
+		return fmt.Errorf("%w: recovering sender from signature: %s", ErrParseTxn, err)
+	}
+	return nil
 }
 
 type PeerID *types.H512

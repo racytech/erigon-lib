@@ -26,6 +26,7 @@ require (
 	github.com/holiman/uint256 v1.2.1
 	github.com/matryer/moq v0.3.0
 	github.com/pbnjay/memory v0.0.0-20210728143218-7b4eea64cf58
+	github.com/protolambda/go-kzg v0.0.0-20221224134646-c91cee5e954e
 	github.com/quasilyte/go-ruleguard/dsl v0.3.22
 	github.com/spaolacci/murmur3 v1.1.0
 	github.com/stretchr/testify v1.8.1
@@ -69,7 +70,9 @@ require (
 	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/google/uuid v1.3.0 // indirect
 	github.com/gorilla/websocket v1.5.0 // indirect
+	github.com/herumi/bls-eth-go-binary v1.28.1 // indirect
 	github.com/huandu/xstrings v1.3.2 // indirect
+	github.com/kilic/bls12-381 v0.1.1-0.20220929213557-ca162e8a70f4 // indirect
 	github.com/lispad/go-generics-tools v1.1.0 // indirect
 	github.com/mattn/go-colorable v0.1.13 // indirect
 	github.com/mattn/go-isatty v0.0.17 // indirect
@@ -106,3 +109,5 @@ require (
 	google.golang.org/genproto v0.0.0-20221118155620-16455021b5e6 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
+
+replace github.com/ledgerwatch/interfaces => github.com/roberto-bayardo/interfaces v0.0.0-20230125140013-a42dd5f11cb5
