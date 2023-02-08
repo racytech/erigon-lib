@@ -337,6 +337,8 @@ github.com/protolambda/go-kzg v0.0.0-20221224134646-c91cee5e954e h1:Wed8Zc7HuSVN
 github.com/protolambda/go-kzg v0.0.0-20221224134646-c91cee5e954e/go.mod h1:7EhkBJFo/qJ9sToiW5baPqbyPo/TadVHn4iNdpwEW/w=
 github.com/quasilyte/go-ruleguard/dsl v0.3.22 h1:wd8zkOhSNr+I+8Qeciml08ivDt1pSXe60+5DqOpCjPE=
 github.com/quasilyte/go-ruleguard/dsl v0.3.22/go.mod h1:KeCP03KrjuSO0H1kTuZQCWlQPulDV6YMIXmpQss17rU=
+github.com/racytech/interfaces v0.0.0-20230206100308-90995b4ec0a6 h1:OsePHHl7raAwbyOp2CfoPDDrGcCVneXoIr2RJo6xbTU=
+github.com/racytech/interfaces v0.0.0-20230206100308-90995b4ec0a6/go.mod h1:ugQv1QllJzBny3cKZKxUrSnykkjkBgm27eQM6dnGAcc=
 github.com/rcrowley/go-metrics v0.0.0-20181016184325-3113b8401b8a/go.mod h1:bCqnVzQkZxMG4s8nGwiZ5l3QUCyqpo9Y+/ZMZ9VjZe4=
 github.com/roberto-bayardo/interfaces v0.0.0-20230125140013-a42dd5f11cb5 h1:/ScbB0EJluuR1vlfAsFhqpP5Pjg4TVG1DEluy3B8awc=
 github.com/roberto-bayardo/interfaces v0.0.0-20230125140013-a42dd5f11cb5/go.mod h1:ugQv1QllJzBny3cKZKxUrSnykkjkBgm27eQM6dnGAcc=

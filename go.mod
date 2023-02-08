@@ -3,7 +3,7 @@ module github.com/ledgerwatch/erigon-lib
 go 1.18
 
 require (
-	github.com/ledgerwatch/interfaces v0.0.0-20230201210041-46fc5eaf2814
+	github.com/ledgerwatch/interfaces v0.0.0-20230206100308-90995b4ec0a6
 	github.com/ledgerwatch/log/v3 v3.7.0
 	github.com/ledgerwatch/secp256k1 v1.0.0
 	github.com/ledgerwatch/trackerslist v1.0.0
@@ -110,4 +110,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/ledgerwatch/interfaces => github.com/roberto-bayardo/interfaces v0.0.0-20230125140013-a42dd5f11cb5
+replace github.com/ledgerwatch/interfaces => github.com/racytech/interfaces v0.0.0-20230206100308-90995b4ec0a6
