@@ -34,6 +34,10 @@ func NewEthBackendClientDirect(server remote.ETHBACKENDServer) *EthBackendClient
 	return &EthBackendClientDirect{server: server}
 }
 
+func (s *EthBackendClientDirect) EngineGetBlobsBundleV1(ctx context.Context, in *remote.EngineGetBlobsBundleRequest, opts ...grpc.CallOption) (*types.BlobsBundleV1, error) {
+	return s.server.EngineGetBlobsBundleV1(ctx, in)
+}
+
 func (s *EthBackendClientDirect) Etherbase(ctx context.Context, in *remote.EtherbaseRequest, opts ...grpc.CallOption) (*remote.EtherbaseReply, error) {
 	return s.server.Etherbase(ctx, in)
 }
@@ -64,10 +68,6 @@ func (s *EthBackendClientDirect) EngineGetPayloadBodiesByHashV1(ctx context.Cont
 
 func (s *EthBackendClientDirect) EngineGetPayloadBodiesByRangeV1(ctx context.Context, in *remote.EngineGetPayloadBodiesByRangeV1Request, opts ...grpc.CallOption) (*remote.EngineGetPayloadBodiesV1Response, error) {
 	return s.server.EngineGetPayloadBodiesByRangeV1(ctx, in)
-}
-
-func (s *EthBackendClientDirect) EngineGetBlobsBundleV1(ctx context.Context, in *remote.EngineGetBlobsBundleRequest, opts ...grpc.CallOption) (*types.BlobsBundleV1, error) {
-	return s.server.EngineGetBlobsBundleV1(ctx, in)
 }
 
 func (s *EthBackendClientDirect) Version(ctx context.Context, in *emptypb.Empty, opts ...grpc.CallOption) (*types.VersionReply, error) {
