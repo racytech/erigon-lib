@@ -110,4 +110,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/ledgerwatch/interfaces => github.com/racytech/interfaces v0.0.0-20230206100308-90995b4ec0a6
+replace github.com/ledgerwatch/interfaces => github.com/racytech/interfaces v0.0.0-20230216141250-c8960ecd9bc9
