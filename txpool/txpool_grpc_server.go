@@ -202,6 +202,7 @@ func (s *GrpcServer) Add(ctx context.Context, in *txpool_proto.AddRequest) (*txp
 				reply.Errors[i] = txpoolcfg.AlreadyKnown.String()
 				reply.Imported[i] = txpool_proto.ImportResult_ALREADY_EXISTS
 			} else if errors.Is(err, types.ErrRlpTooBig) { // Noop, but need to handle to not count these
+				fmt.Println("GOT HERE!!! parseCtx.ParseTransaction")
 				reply.Errors[i] = txpoolcfg.RLPTooLong.String()
 				reply.Imported[i] = txpool_proto.ImportResult_INVALID
 			} else {
